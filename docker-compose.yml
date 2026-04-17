@@ -1,0 +1,102 @@
+services:
+  softhsm:
+    image: alpine:latest
+    container_name: softhsm-poc
+    command: >
+      sh -c "apk add --no-cache softhsm openssl &&
+      mkdir -p /var/lib/softhsm/tokens &&
+      echo 'directories.tokendir = /var/lib/softhsm/tokens' > /etc/softhsm2.conf &&
+      echo 'objectstore.backend = file' >> /etc/softhsm2.conf &&
+      echo 'log.level = INFO' >> /etc/softhsm2.conf &&
+      cp /etc/softhsm2.conf /etc/softhsm/softhsm2.conf &&
+      export SOFTHSM2_CONF=/etc/softhsm2.conf &&
+      softhsm2-util --init-token --free --label AuthToken --so-pin 87654321 --pin 12345678 --force &&
+      echo 'SoftHSM initialized successfully' &&
+      softhsm2-util --show-slots &&
+      tail -f /dev/null"
+    volumes:
+      - softhsm-data:/var/lib/softhsm
+      - softhsm-config:/etc/softhsm
+    environment:
+      - SOFTHSM2_CONF=/etc/softhsm2.conf
+    networks:
+      - hsm-network
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: audit-db
+    environment:
+      POSTGRES_DB: aadhaar_audit
+      POSTGRES_USER: audit_user
+      POSTGRES_PASSWORD: AuditPass2025!
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgress/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - hsm-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U audit_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    container_name: aadhaar-auth-gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+      softhsm:
+        condition: service_started
+    environment:
+      HSM_LIBRARY: /usr/lib/softhsm/libsofthsm2.so
+      HSM_TOKEN_LABEL: AuthToken
+      HSM_USER_PIN: 12345678
+      SOFTHSM2_CONF: /etc/softhsm/softhsm2.conf
+      DB_HOST: postgres
+      DB_NAME: aadhaar_audit
+      DB_USER: audit_user
+      DB_PASSWORD: AuditPass2025!
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/app
+      - softhsm-data:/var/lib/softhsm:ro
+      - softhsm-config:/etc/softhsm:ro
+    networks:
+      - hsm-network
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - hsm-network
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin123
+    ports:
+      - "3000:3000"
+    networks:
+      - hsm-network
+    restart: unless-stopped
+
+networks:
+  hsm-network:
+    driver: bridge
+
+volumes:
+  softhsm-data:
+  softhsm-config:
+  postgres-data:
