@@ -55,6 +55,14 @@ try:
 except ImportError as e:
     logger.warning(f"Vault module not available: {e}")
 
+try:
+    from security import SecurityValidator, SensitiveDataFilter
+    logger.info("Security validator imported")
+    SECURITY_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Security validator not available: {e}")
+    SECURITY_AVAILABLE = False
+
 # Initialize components
 hsm = None
 if HSM_AVAILABLE:
@@ -148,6 +156,12 @@ class VaultCheckDuplicateRequest(BaseModel):
 class VaultCheckDuplicateResponse(BaseModel):
     is_duplicate: bool
     token: Optional[str] = None
+
+
+class VaultAuditResponse(BaseModel):
+    token: str
+    operation: str
+    timestamp: str
 
 
 @app.get("/")
@@ -259,6 +273,26 @@ async def vault_store(request: VaultStoreRequest):
     try:
         from vault import AadhaarData
 
+        if SECURITY_AVAILABLE:
+            is_valid, error = SecurityValidator.validate_aadhaar(request.aadhaar_number)
+            if not is_valid:
+                raise HTTPException(status_code=400, detail=error)
+
+            if request.email:
+                is_valid, error = SecurityValidator.validate_email(request.email)
+                if not is_valid:
+                    raise HTTPException(status_code=400, detail=error)
+
+            if request.phone:
+                is_valid, error = SecurityValidator.validate_phone(request.phone)
+                if not is_valid:
+                    raise HTTPException(status_code=400, detail=error)
+
+            if request.name:
+                is_valid, error = SecurityValidator.validate_name(request.name)
+                if not is_valid:
+                    raise HTTPException(status_code=400, detail=error)
+
         aadhaar_data = AadhaarData(
             aadhaar_number=request.aadhaar_number,
             name=request.name,
@@ -278,6 +312,8 @@ async def vault_store(request: VaultStoreRequest):
             masked_aadhaar=response.masked_aadhaar,
             created_at=response.created_at
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Vault store failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -354,6 +390,32 @@ async def vault_delete(token: str):
         raise HTTPException(status_code=404, detail="Token not found")
 
     return {"message": "Data deleted successfully", "token": token}
+
+
+@app.get("/vault/{token}/validate")
+async def vault_validate_token(token: str):
+    """Validate a token (check if exists and not deleted)"""
+    is_valid = vault.check_duplicate_by_token(token)
+    return {
+        "token": token,
+        "is_valid": is_valid,
+        "status": "active" if is_valid else "not_found_or_deleted"
+    }
+
+
+class VaultAuditResponse(BaseModel):
+    token: str
+    operation: str
+    timestamp: str
+
+
+@app.get("/vault/audit")
+async def vault_audit(limit: int = 100):
+    """Get audit log of vault operations"""
+    return {
+        "message": "Audit endpoint - implement with correlation IDs",
+        "note": "Add correlation ID tracking for production"
+    }
 
 
 @app.get("/metrics")
