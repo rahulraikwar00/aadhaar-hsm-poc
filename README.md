@@ -1,46 +1,47 @@
-# Aadhaar HSM Gateway
+# Aadhaar Secure Vault
 
-A Docker-based authentication gateway that uses SoftHSM for cryptographic signing of Aadhaar biometric authentication requests.
+A self-installable, open-source proof-of-concept for secure on-premises Aadhaar storage using tokenization and HSM-backed encryption.
 
 ## Overview
 
-This project provides a secure API gateway that:
-- Signs authentication requests using a Hardware Security Module (SoftHSM)
-- Logs all cryptographic operations to PostgreSQL
-- Exposes Prometheus metrics for monitoring
-- Visualizes metrics with Grafana dashboards
+This project implements a **Tokenization + Vault Architecture** for securely storing and managing Aadhaar data:
+
+- **Tokenization**: Sensitive Aadhaar data is replaced with secure tokens (T-UUID format)
+- **Vault**: Encrypted storage with field-level masking
+- **HSM Integration**: Hardware Security Module for cryptographic operations
+- **Audit Logging**: Complete audit trail of all operations
+
+### Key Features
+
+- Token-based storage (no raw Aadhaar exposed)
+- Field-level data masking (Aadhaar, email, phone)
+- Input validation (Aadhaar format, email, phone)
+- Secure delete (soft delete, data not immediately removed)
+- Duplicate detection
+- Prometheus metrics
+- Grafana dashboard support
 
 ## Architecture
 
-![Architecture Diagram](./architecture.png)
-
-> Tip: Also see `architecture.mmd` for Mermaid diagram.
-
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    hsm-network (bridge)                        │
-│                                                             │
-│   ┌──────────────────────┐      ┌────────────────────┐  │
-│   │    grafana:3000      │      │   prometheus:9090 │  │
-│   │    (metrics UI)     │◄─────│  (scrapes app)  │  │
-│   └──────────────────────┘      └────────┬─────────┘  │
-│          │                                    │           │
-│    ┌─────┴──────────┐              ┌───────┴──────────┐  │
-│    │ softhsm-poc    │              │   app:8000       │  │
-│    │ (SoftHSM HSM)  │◄─────────────│  (FastAPI)       │  │
-│    └────────────────┘              └────────┬─────────┘  │
-│                                                │           │
-│                                   ┌────────────┴──────────┐ │
-│                                   │   audit-db:5432      │ │
-│                                   │   (PostgreSQL)       │ │
-│                                   └──────────────────────┘ │
-└─────────────────────────────────────────────────────────────┘
-        │
-   [exposed ports to host]
-        │
-    :8000   →   /health, /auth/sign, /metrics
-    :9090   →   Prometheus UI
-    :3000   →   Grafana UI (admin/admin123)
+┌─────────────────────────────────────────────────────────────────────┐
+│                    hsm-network (bridge)                          │
+│                                                                │
+│   ┌──────────────────┐      ┌──────────────────┐                │
+│   │   grafana:3000   │      │ prometheus:9090  │                │
+│   │  (Dashboards)   │◄─────│  (Metrics)      │                │
+│   └──────────────────┘      └────────┬─────────┘                │
+│            │                              │                       │
+│            │                       ┌─────┴─────────┐             │
+│            │                       │    app:8000  │             │
+│            │                       │ (FastAPI)   │             │
+│            │                       └──────┬──────┘             │
+│      ┌─────┴──────┐                    │                      │
+│      │ softhsm     │                    │  ┌───────────────┐    │
+│      │ (HSM)      │◄───────────────────┴──│  │ audit-db:5432 │    │
+│      └────────────┘                       │  │ (PostgreSQL)  │    │
+│                                       │  └─────────────┘    │
+└────────────────────────────────────────┴─────────────────────────┘
 ```
 
 ## Quick Start
@@ -49,13 +50,16 @@ This project provides a secure API gateway that:
 - Docker
 - Docker Compose
 
-### Build & Run
+### Installation
 
 ```bash
+# Clone and navigate
+cd aadhaar-secure-vault
+
 # Start all services
 docker compose up -d
 
-# Verify services are running
+# Check status
 docker compose ps
 ```
 
@@ -65,36 +69,86 @@ docker compose ps
 # Health check
 curl http://localhost:8000/health
 
-# Sign authentication request
-curl -X POST http://localhost:8000/auth/sign \
+# Store Aadhaar data (returns token)
+curl -X POST http://localhost:8000/vault/store \
   -H "Content-Type: application/json" \
   -d '{
-    "aadhaar_ref": "TEST-12345",
-    "biometric_data": "test_biometric_data",
-    "user_id": "user001",
-    "purpose": "authentication"
+    "aadhaar_number": "123456789012",
+    "name": "John Doe",
+    "email": "john@example.com",
+    "phone": "9876543210"
   }'
 
-# Get metrics
-curl http://localhost:8000/metrics
+# Retrieve by token
+curl http://localhost:8000/vault/{TOKEN}
+
+# Get masked data only
+curl http://localhost:8000/vault/{TOKEN}/masked
+
+# Check for duplicates
+curl -X POST http://localhost:8000/vault/check-duplicate \
+  -H "Content-Type: application/json" \
+  -d '{"aadhaar_number": "123456789012"}'
+
+# List all tokens
+curl http://localhost:8000/vault/tokens
+
+# Delete data (soft delete)
+curl -X DELETE http://localhost:8000/vault/{TOKEN}
+
+# Validate token
+curl http://localhost:8000/vault/{TOKEN}/validate
 ```
 
 ## API Endpoints
 
+### Vault Operations
+
 | Method | Endpoint | Description |
-|--------|----------|-------------|
+|--------|---------|-------------|
+| POST | `/vault/store` | Store Aadhaar → get token |
+| GET | `/vault/{token}` | Retrieve full data |
+| GET | `/vault/{token}/masked` | Get masked data |
+| GET | `/vault/{token}/validate` | Check token validity |
+| DELETE | `/vault/{token}` | Secure delete |
+| POST | `/vault/check-duplicate` | Check if exists |
+| GET | `/vault/tokens` | List all tokens |
+| GET | `/vault/audit` | Audit logs |
+
+### Other Endpoints
+
+| Method | Endpoint | Description |
+|--------|---------|-------------|
 | GET | `/` | Service info |
 | GET | `/health` | Health check |
-| POST | `/auth/sign` | Sign auth request |
 | GET | `/metrics` | Prometheus metrics |
+| POST | `/auth/sign` | Sign auth request |
 | GET | `/admin/keys` | List HSM keys |
-| GET | `/admin/audit-log` | Get audit logs |
+
+## Security Features
+
+### Input Validation
+- Aadhaar number: Exactly 12 digits
+- Email: RFC 5322 format
+- Phone: 10-12 digits
+- Name: No special characters
+
+### Data Masking
+- Aadhaar: `xxxxxxxx9012` (last 4 visible)
+- Email: `jxxxxxr@example.com`
+- Phone: `xxxxxx3210`
+
+### Sensitive Data Filter
+Automatically redacts sensitive fields in logs:
+- `aadhaar_number`
+- `biometric_data`
+- `password`, `pin`, `secret`, `token`
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HSM_LIBRARY` | `/usr/lib/softhsm/libsofthsm2.so` | SoftHSM library path |
+| `HSM_LIBRARY` | `/usr/lib/softhsm/libsofthsm2.so` | SoftHSM library |
 | `HSM_TOKEN_LABEL` | `AuthToken` | HSM token label |
 | `HSM_USER_PIN` | `12345678` | HSM user PIN |
 | `DB_HOST` | `postgres` | Database host |
@@ -103,10 +157,10 @@ curl http://localhost:8000/metrics
 | `DB_PASSWORD` | `AuditPass2025!` | Database password |
 | `API_PORT` | `8000` | API port |
 
-## Available Services
+## Services
 
 | Service | Port | Credentials |
-|---------|-----|-------------|
+|---------|-----|------------|
 | API | 8000 | - |
 | Prometheus | 9090 | - |
 | Grafana | 3000 | admin/admin123 |
@@ -114,75 +168,107 @@ curl http://localhost:8000/metrics
 
 ## Prometheus Metrics
 
-- `auth_requests_total` - Total authentication requests
-- `hsm_signatures_total` - Total HSM signatures
-- `mock_signatures_total` - Total mock signatures (fallback)
-- `key_rotations_total` - Total key rotations
-- `hsm_connected` - HSM connection status (1=connected)
+```bash
+# View all metrics
+curl http://localhost:8000/metrics
+
+# Query specific metrics
+vault_store_total           # Total store operations
+vault_retrieve_total      # Total retrieve operations
+vault_delete_total      # Total delete operations
+auth_requests_total    # Auth requests
+hsm_signatures_total  # HSM signatures
+```
 
 ## Grafana Setup
 
 1. Open http://localhost:3000
 2. Login: `admin` / `admin123`
-3. Add Prometheus data source:
+3. Add data source:
    - Configuration → Data Sources → Add
    - Select Prometheus
    - URL: `http://prometheus:9090`
-   - Save & Test
 4. Create dashboard with queries:
-   - `auth_requests_total`
-   - `hsm_signatures_total`
-   - `rate(auth_requests_total[5m])`
+   - `vault_store_total`
+   - `vault_retrieve_total`
+   - `rate(vault_store_total[5m])`
 
 ## Project Structure
 
 ```
 aadhaar-hsm-poc/
 ├── app/
-│   ├── main.py           # FastAPI application
-│   ├── hsm_wrapper.py   # SoftHSM wrapper
-│   ├── audit_logger.py   # Audit logging
+│   ├── main.py              # FastAPI application
+│   ├── hsm_wrapper.py     # SoftHSM wrapper
+│   ├── vault.py           # Vault storage
+│   ├── token_manager.py  # Tokenization
+│   ├── security.py       # Validation & filtering
+│   ├── audit_logger.py # Audit logging
 │   └── key_rotation_manager.py
 ├── postgress/
-│   └── init.sql         # Database schema
+│   └── init.sql
 ├── prometheus/
-│   └── prometheus.yml   # Prometheus config
-├── docker-compose.yml  # Docker services
-├── Dockerfile           # App container
-├── requirements.txt     # Python dependencies
-├── .env                # Environment variables
-├── config.yaml         # Application config
-└── test_api.sh         # API tests
+│   └── prometheus.yml
+├── docker-compose.yml
+├── Dockerfile
+├── requirements.txt
+├── .env
+├── config.yaml
+├── README.md
+├── architecture.mmd
+└── architecture.png
 ```
 
-## Stopping Services
+## Development
+
+### Run Tests
 
 ```bash
-# Stop all services
-docker compose down
+# Test store
+curl -X POST http://localhost:8000/vault/store \
+  -H "Content-Type: application/json" \
+  -d '{"aadhaar_number": "123456789012", "name": "Test"}'
 
-# Stop and remove volumes
-docker compose down -v
+# Test validation
+curl -X POST http://localhost:8000/vault/store \
+  -H "Content-Type: application/json" \
+  -d '{"aadhaar_number": "123"}'  # Should fail
+
+# Test metrics
+curl http://localhost:8000/metrics | grep vault
 ```
 
-## Troubleshooting
+### Build Docker
 
-### Check logs
+```bash
+docker compose build app
+docker compose up -d
+```
+
+### View Logs
+
 ```bash
 docker compose logs app
 docker compose logs softhsm
 docker compose logs postgres
 ```
 
-### Verify HSM connectivity
+## Stopping
+
 ```bash
-curl http://localhost:8000/admin/keys
+docker compose down
+docker compose down -v  # Remove volumes
 ```
 
-### Check metrics
-```bash
-curl http://localhost:8000/metrics | grep hsm_connected
-```
+## Roadmap
+
+- [ ] PostgreSQL-backed vault (production)
+- [ ] HSM field encryption
+- [ ] Correlation ID audit logging
+- [ ] Key rotation
+- [ ] TLS/HTTPS
+- [ ] API authentication
+- [ ] Rate limiting
 
 ## License
 
