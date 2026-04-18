@@ -3,10 +3,109 @@
 import pkcs11
 from pkcs11 import KeyType, Mechanism
 import logging
+import hashlib
+import os
 from typing import Optional
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+class HSMEncryption:
+    """HSM-based encryption helper"""
+
+    def __init__(self, session):
+        self.session = session
+        self._aes_key = None
+
+    def get_or_create_aes_key(self, label: str = "vault_key") -> Optional[object]:
+        """Get or create AES key for vault encryption"""
+        if self._aes_key:
+            return self._aes_key
+
+        try:
+            # Try to find existing key
+            for key in self.session.get_objects():
+                if hasattr(key, 'label') and key.label == label:
+                    self._aes_key = key
+                    logger.info(f"Found existing AES key: {label}")
+                    return key
+
+            # Generate new AES key - use 'size' instead of 'length'
+            key = self.session.generate_key(
+                key_type=KeyType.AES,
+                size=256,  # Use 'size' parameter
+                label=label,
+                store=True,
+                private=True,
+                sensitive=True,
+                extractable=False
+            )
+            self._aes_key = key
+            logger.info(f"Generated new AES key: {label}")
+            return key
+
+        except Exception as e:
+            logger.error(f"Failed to get/create AES key: {e}")
+            return None
+
+    def encrypt_data(self, data: bytes) -> bytes:
+        """Encrypt data using AES key"""
+        if not self.session:
+            logger.warning("No HSM session, using plain storage")
+            return data
+
+        try:
+            key = self.get_or_create_aes_key()
+            if not key:
+                logger.warning("No AES key, using plain storage")
+                return data
+
+            iv = os.urandom(12)
+            mechanism = Mechanism.AES_GCM(iv)
+            encrypted = key.encrypt(data, mechanism=mechanism)
+
+            result = iv + encrypted
+            logger.info(f"HSM encrypted {len(data)} bytes -> {len(result)} bytes")
+            return result
+
+        except Exception as e:
+            logger.error(f"HSM encryption failed: {e}")
+            return data
+
+    def decrypt_data(self, encrypted_data: bytes) -> bytes:
+        """Decrypt data using AES key"""
+        if not self.session or len(encrypted_data) <= 16:
+            return encrypted_data
+
+        try:
+            key = self.get_or_create_aes_key()
+            if not key:
+                return encrypted_data
+
+            iv = encrypted_data[:12]
+            ciphertext = encrypted_data[12:]
+
+            mechanism = Mechanism.AES_GCM(iv)
+            decrypted = key.decrypt(ciphertext, mechanism=mechanism)
+
+            logger.info(f"HSM decrypted {len(encrypted_data)} bytes")
+            return decrypted
+
+        except Exception as e:
+            logger.error(f"HSM decryption failed: {e}")
+            return encrypted_data
+
+    def _mock_encrypt(self, data: bytes) -> bytes:
+        """Mock encryption (for testing without HSM)"""
+        key = hashlib.sha256(b"vault_default_key").digest()
+        return key[:16] + data + key[:16]
+
+    def _mock_decrypt(self, encrypted_data: bytes) -> bytes:
+        """Mock decryption (for testing without HSM)"""
+        if len(encrypted_data) > 32:
+            return encrypted_data[16:-16]
+        return encrypted_data
 
 
 class HSMWrapper:

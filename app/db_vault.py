@@ -15,6 +15,14 @@ except ImportError:
     logger.warning("psycopg2 not available, using in-memory vault")
     DB_AVAILABLE = False
 
+# Try to import HSM encryption
+HSM_ENCRYPTION = None
+try:
+    from hsm_wrapper import HSMEncryption
+    HSM_ENCRYPTION = HSMEncryption
+except ImportError:
+    logger.warning("HSM encryption not available")
+
 
 class AadhaarData:
     def __init__(
@@ -75,14 +83,21 @@ class TokenResponse:
 
 
 class DatabaseVault:
-    """PostgreSQL-backed vault storage"""
+    """PostgreSQL-backed vault storage with HSM encryption"""
 
-    def __init__(self, db_host: str, db_name: str, db_user: str, db_password: str):
+    def __init__(self, db_host: str, db_name: str, db_user: str, db_password: str, hsm_session=None):
         self.db_host = db_host
         self.db_name = db_name
         self.db_user = db_user
         self.db_password = db_password
         self.conn = None
+        self.hsm_encryption = None
+        
+        # Initialize HSM encryption if available
+        if HSM_ENCRYPTION and hsm_session:
+            self.hsm_encryption = HSMEncryption(hsm_session)
+            logger.info("HSM encryption initialized")
+        
         self._connect()
 
     def _connect(self):
@@ -138,7 +153,18 @@ class DatabaseVault:
         masked = self._mask_data(aadhaar_data.to_dict())
         created_at = datetime.now().isoformat()
 
+        # Encrypt data using HSM if available
         data_bytes = aadhaar_data.to_json().encode('utf-8')
+        if self.hsm_encryption:
+            try:
+                encrypted_bytes = self.hsm_encryption.encrypt_data(data_bytes)
+                logger.info(f"HSM encrypted data for token: {token}")
+            except Exception as e:
+                logger.warning(f"HSM encryption failed, storing plain: {e}")
+                encrypted_bytes = data_bytes
+        else:
+            encrypted_bytes = data_bytes
+            logger.info(f"Storing plain data for token: {token}")
 
         try:
             with self.conn.cursor() as cur:
@@ -193,7 +219,17 @@ class DatabaseVault:
             else:
                 data_bytes = encrypted_data
 
-            data_str = data_bytes.decode('utf-8')
+            # Decrypt using HSM if available
+            if self.hsm_encryption:
+                try:
+                    decrypted_bytes = self.hsm_encryption.decrypt_data(data_bytes)
+                    data_str = decrypted_bytes.decode('utf-8')
+                    logger.info(f"HSM decrypted data for token: {token}")
+                except Exception as e:
+                    logger.warning(f"HSM decryption failed, trying plain: {e}")
+                    data_str = data_bytes.decode('utf-8')
+            else:
+                data_str = data_bytes.decode('utf-8')
             data_dict = json.loads(data_str)
             return AadhaarData.from_dict(data_dict)
 
@@ -334,8 +370,8 @@ class DatabaseVault:
             logger.info("Database connection closed")
 
 
-def create_vault(db_host: str, db_name: str, db_user: str, db_password: str) -> DatabaseVault:
+def create_vault(db_host: str, db_name: str, db_user: str, db_password: str, hsm_session=None) -> DatabaseVault:
     """Factory function to create vault"""
     if DB_AVAILABLE:
-        return DatabaseVault(db_host, db_name, db_user, db_password)
+        return DatabaseVault(db_host, db_name, db_user, db_password, hsm_session)
     raise Exception("psycopg2 not available")

@@ -117,11 +117,15 @@ if HSM_AVAILABLE:
 vault = None
 if DB_VAULT_AVAILABLE:
     try:
+        # Get HSM session for encryption
+        hsm_session = hsm.session if hsm else None
+        
         vault = create_vault(
             db_host=os.getenv('DB_HOST', 'postgres'),
             db_name=os.getenv('DB_NAME', 'aadhaar_audit'),
             db_user=os.getenv('DB_USER', 'audit_user'),
-            db_password=os.getenv('DB_PASSWORD', 'AuditPass2025!')
+            db_password=os.getenv('DB_PASSWORD', 'AuditPass2025!'),
+            hsm_session=hsm_session
         )
         logger.info("Database vault initialized")
     except Exception as e:
