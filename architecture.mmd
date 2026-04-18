@@ -7,6 +7,9 @@ graph TB
     subgraph "Docker Network: hsm-network"
         subgraph "app-container"
             API[app:8000<br/>FastAPI]
+            Vault[Vault<br/>Tokenization]
+            HSM[HSM Wrapper<br/>Encryption]
+            Audit[Audit Logger]
         end
 
         subgraph "metrics-stack"
@@ -16,7 +19,7 @@ graph TB
 
         subgraph "infrastructure"
             SoftHSM[softhsm<br/>SoftHSM]
-            Postgres[audit-db:5432<br/>PostgreSQL]
+            Postgres[audit-db:5432<br/>PostgreSQL<br/>Vault+Audit]
         end
     end
 
@@ -28,14 +31,21 @@ graph TB
 
     Client -->|http| Port8000
     Port8000 -->|routes to| API
-    API -->|signing| SoftHSM
-    API -->|logging| Postgres
+    API -->|tokenize| Vault
+    API -->|encrypt/decrypt| HSM
+    HSM -->|signing| SoftHSM
+    Vault -->|stores| Postgres
+    API -->|logging| Audit
+    Audit -->|writes| Postgres
     API -->|scrapes /metrics| Prometheus
     Grafana -->|queries| Prometheus
     Port9090 -->|for UI| Prometheus
     Port3000 -->|for UI| Grafana
 
     style API fill:#90EE90
+    style Vault fill:#98FB98
+    style HSM fill:#87CEEB
+    style Audit fill:#B0C4DE
     style SoftHSM fill:#87CEEB
     style Postgres fill:#DDA0DD
     style Prometheus fill:#FFD700
