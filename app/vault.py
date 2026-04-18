@@ -5,6 +5,29 @@ import uuid
 import hashlib
 import logging
 
+try:
+    from token_manager import mask_aadhaar, mask_email, mask_phone
+except ImportError:
+    def mask_aadhaar(aadhaar_number: str, visible_digits: int = 4) -> str:
+        if len(aadhaar_number) <= visible_digits:
+            return "x" * len(aadhaar_number)
+        return "x" * (len(aadhaar_number) - visible_digits) + aadhaar_number[-visible_digits:]
+
+    def mask_email(email: str) -> str:
+        if "@" not in email:
+            return "x" * len(email)
+        local, domain = email.split("@", 1)
+        if len(local) <= 2:
+            masked_local = "x" * len(local)
+        else:
+            masked_local = local[0] + "x" * (len(local) - 2) + local[-1]
+        return f"{masked_local}@{domain}"
+
+    def mask_phone(phone: str) -> str:
+        if len(phone) <= 4:
+            return "x" * len(phone)
+        return "x" * (len(phone) - 4) + phone[-4:]
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,12 +69,16 @@ class Vault:
         """Store Aadhaar data and generate token"""
         token = self._generate_token()
         masked = self._mask_aadhaar(aadhaar_data.aadhaar_number)
+        created_at = datetime.now().isoformat()
+
+        raw_data = aadhaar_data.model_dump()
+        masked_fields = self._mask_data(raw_data)
 
         vault_entry = VaultStore(
             token=token,
             encrypted_data=aadhaar_data.model_dump_json(),
-            masked_data={"aadhaar_number": masked},
-            created_at=datetime.now().isoformat(),
+            masked_data=masked_fields,
+            created_at=created_at,
             created_by=user_id,
             is_deleted=False
         )
@@ -62,10 +89,10 @@ class Vault:
         return TokenResponse(
             token=token,
             masked_aadhaar=masked,
-            created_at=vault_entry.created_at
+            created_at=created_at
         )
 
-    def retrieve_data(self, token: str) -> AadhaarData | None:
+    def retrieve_data(self, token: str) -> Optional[AadhaarData]:
         """Retrieve data by token"""
         if token not in self.store:
             logger.warning(f"Token not found: {token}")
@@ -78,7 +105,7 @@ class Vault:
 
         return AadhaarData.model_validate_json(entry.encrypted_data)
 
-    def get_masked(self, token: str) -> dict | None:
+    def get_masked(self, token: str) -> Optional[dict]:
         """Get masked data only"""
         if token not in self.store:
             return None
@@ -126,9 +153,23 @@ class Vault:
 
     def _mask_aadhaar(self, aadhaar_number: str) -> str:
         """Mask Aadhaar number - show only last 4 digits"""
-        if len(aadhaar_number) >= 4:
-            return "x" * (len(aadhaar_number) - 4) + aadhaar_number[-4:]
-        return "x" * len(aadhaar_number)
+        return mask_aadhaar(aadhaar_number)
+
+    def _mask_data(self, data: dict) -> dict:
+        """Mask various sensitive fields"""
+        masked = {}
+        for key, value in data.items():
+            if value is None:
+                masked[key] = None
+            elif key == "aadhaar_number":
+                masked[key] = mask_aadhaar(value)
+            elif key == "email":
+                masked[key] = mask_email(value)
+            elif key == "phone":
+                masked[key] = mask_phone(value)
+            else:
+                masked[key] = value
+        return masked
 
 
 vault = Vault()
