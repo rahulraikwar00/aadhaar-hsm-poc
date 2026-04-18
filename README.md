@@ -292,4 +292,22 @@ docker compose down -v  # Remove volumes
 
 ## License
 
-MIT
+MIT - See [LICENSE](LICENSE) file
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for security policy and vulnerability disclosure.
+
+## Roadmap
+
+- [x] PostgreSQL-backed vault (production)
+- [x] HSM field encryption
+- [x] Correlation ID audit logging
+- [ ] Key rotation
+- [ ] TLS/HTTPS
+- [ ] API authentication
+- [ ] Rate limiting
