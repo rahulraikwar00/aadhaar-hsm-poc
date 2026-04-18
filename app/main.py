@@ -1,10 +1,12 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from datetime import datetime
 import json
 import hashlib
 import os
 import logging
+import time
+import threading
 from prometheus_client import Counter, Gauge, generate_latest
 from starlette.responses import Response
 from typing import Optional
@@ -58,6 +60,13 @@ try:
 except ImportError:
     SECURITY_AVAILABLE = False
 
+try:
+    from key_rotation_manager import KeyRotationManager
+    KEY_ROTATION_AVAILABLE = True
+except ImportError:
+    logger.warning("Key rotation manager not available: {e}")
+    KEY_ROTATION_AVAILABLE = False
+
 hsm = None
 if HSM_AVAILABLE:
     try:
@@ -103,6 +112,17 @@ if DB_VAULT_AVAILABLE:
 else:
     if VAULT_FALLBACK:
         vault = in_memory_vault
+
+key_rotation_manager = None
+if KEY_ROTATION_AVAILABLE:
+    try:
+        key_rotation_manager = KeyRotationManager(
+            hsm_wrapper=hsm,
+            rotation_days=int(os.getenv('KEY_ROTATION_DAYS', '90'))
+        )
+        logger.info("Key rotation manager initialized")
+    except Exception as e:
+        logger.warning(f"Key rotation manager init failed: {e}")
 
 
 class AuthRequest(BaseModel):
@@ -323,6 +343,33 @@ async def list_keys():
     return {"keys": [{"label": "mock_key", "type": "RSA-2048"}], "hsm_available": False}
 
 
+@app.post("/admin/rotate-key")
+async def rotate_key():
+    """Manually trigger key rotation"""
+    if not key_rotation_manager:
+        raise HTTPException(status_code=503, detail="Key rotation not available")
+
+    try:
+        new_key = key_rotation_manager.rotate_key()
+        key_rotations_total.inc()
+
+        metadata = key_rotation_manager.load_metadata()
+
+        if audit_logger and hasattr(audit_logger, 'log_crypto_operation'):
+            audit_logger.log_crypto_operation("KEY_ROTATION", metadata.get("current_key_label"), "system", "Manual rotation triggered")
+
+        return {
+            "status": "success",
+            "message": "Key rotation completed",
+            "new_key_label": metadata.get("current_key_label"),
+            "rotation_date": metadata.get("last_rotation"),
+            "total_keys": len(metadata.get("keys", []))
+        }
+    except Exception as e:
+        logger.error(f"Key rotation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Key rotation failed: {str(e)}")
+
+
 @app.get("/admin/audit-log")
 async def get_audit_log():
     if audit_logger:
@@ -335,9 +382,53 @@ async def get_audit_log():
             "hsm_available": hsm is not None and hsm.session is not None if hsm else False}
 
 
+@app.get("/admin/key-status")
+async def key_status():
+    """Get key rotation status"""
+    if not key_rotation_manager:
+        return {"status": "unavailable", "message": "Key rotation not configured"}
+
+    try:
+        metadata = key_rotation_manager.load_metadata()
+        rotation_needed = key_rotation_manager.check_rotation_needed()
+
+        return {
+            "status": "available",
+            "current_key": metadata.get("current_key_label"),
+            "last_rotation": metadata.get("last_rotation"),
+            "rotation_needed": rotation_needed,
+            "total_keys": len(metadata.get("keys", []))
+        }
+    except Exception as e:
+        logger.error(f"Key status check failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 @app.get("/metrics")
 async def metrics():
     return Response(generate_latest(), media_type="text/plain")
+
+
+def key_rotation_scheduler():
+    """Background task to check and perform key rotation"""
+    check_interval = 24 * 60 * 60  # 24 hours
+    while True:
+        try:
+            if key_rotation_manager and key_rotation_manager.check_rotation_needed():
+                logger.info("Automatic key rotation triggered")
+                key_rotation_manager.rotate_key()
+                key_rotations_total.inc()
+                logger.info("Automatic key rotation completed")
+        except Exception as e:
+            logger.error(f"Automatic key rotation failed: {e}")
+
+        time.sleep(check_interval)
+
+
+if key_rotation_manager:
+    scheduler_thread = threading.Thread(target=key_rotation_scheduler, daemon=True)
+    scheduler_thread.start()
+    logger.info("Key rotation scheduler started")
 
 
 if __name__ == "__main__":

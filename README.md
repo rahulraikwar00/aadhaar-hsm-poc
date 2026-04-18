@@ -25,30 +25,10 @@ This project implements a **Tokenization + Vault Architecture** for securely sto
 
 ![Architecture Diagram](architecture.png)
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    hsm-network (bridge)                          │
-│                                                                │
-│   ┌──────────────────┐      ┌──────────────────┐                │
-│   │   grafana:3000   │      │ prometheus:9090  │                │
-│   │  (Dashboards)   │◄─────│  (Metrics)      │                │
-│   └──────────────────┘      └────────┬─────────┘                │
-│            │                              │                       │
-│            │                       ┌─────┴─────────┐             │
-│            │                       │    app:8000  │             │
-│            │                       │ (FastAPI)   │             │
-│            │                       └──────┬──────┘             │
-│      ┌─────┴──────┐                    │                      │
-│      │ softhsm     │                    │  ┌───────────────┐    │
-│      │ (HSM)      │◄───────────────────┴──│  │ audit-db:5432 │    │
-│      └────────────┘                       │  │ (PostgreSQL)  │    │
-│                                       │  └─────────────┘    │
-└────────────────────────────────────────┴─────────────────────────┘
-```
-
 ## Quick Start
 
 ### Prerequisites
+
 - Docker
 - Docker Compose
 
@@ -106,66 +86,73 @@ curl http://localhost:8000/vault/{TOKEN}/validate
 
 ### Vault Operations
 
-| Method | Endpoint | Description |
-|--------|---------|-------------|
-| POST | `/vault/store` | Store Aadhaar → get token |
-| GET | `/vault/{token}` | Retrieve full data |
-| GET | `/vault/{token}/masked` | Get masked data |
-| GET | `/vault/{token}/validate` | Check token validity |
-| DELETE | `/vault/{token}` | Secure delete |
-| POST | `/vault/check-duplicate` | Check if exists |
-| GET | `/vault/tokens` | List all tokens |
-| GET | `/vault/audit` | Audit logs |
+| Method | Endpoint                  | Description               |
+| ------ | ------------------------- | ------------------------- |
+| POST   | `/vault/store`            | Store Aadhaar → get token |
+| GET    | `/vault/{token}`          | Retrieve full data        |
+| GET    | `/vault/{token}/masked`   | Get masked data           |
+| GET    | `/vault/{token}/validate` | Check token validity      |
+| DELETE | `/vault/{token}`          | Secure delete             |
+| POST   | `/vault/check-duplicate`  | Check if exists           |
+| GET    | `/vault/tokens`           | List all tokens           |
+| GET    | `/vault/audit`            | Audit logs                |
 
 ### Other Endpoints
 
-| Method | Endpoint | Description |
-|--------|---------|-------------|
-| GET | `/` | Service info |
-| GET | `/health` | Health check |
-| GET | `/metrics` | Prometheus metrics |
-| POST | `/auth/sign` | Sign auth request |
-| GET | `/admin/keys` | List HSM keys |
+| Method | Endpoint              | Description             |
+| ------ | --------------------- | ----------------------- |
+| GET    | `/`                   | Service info            |
+| GET    | `/health`             | Health check            |
+| GET    | `/metrics`            | Prometheus metrics      |
+| POST   | `/auth/sign`          | Sign auth request       |
+| GET    | `/admin/keys`         | List HSM keys           |
+| POST   | `/admin/rotate-key`   | Trigger key rotation    |
+| GET    | `/admin/key-status`   | Key rotation status     |
+| GET    | `/admin/audit-log`    | View audit logs         |
 
 ## Security Features
 
 ### Input Validation
+
 - Aadhaar number: Exactly 12 digits
 - Email: RFC 5322 format
 - Phone: 10-12 digits
 - Name: No special characters
 
 ### Data Masking
+
 - Aadhaar: `xxxxxxxx9012` (last 4 visible)
 - Email: `jxxxxxr@example.com`
 - Phone: `xxxxxx3210`
 
 ### Sensitive Data Filter
+
 Automatically redacts sensitive fields in logs:
+
 - `aadhaar_number`
 - `biometric_data`
 - `password`, `pin`, `secret`, `token`
 
 ## Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `HSM_LIBRARY` | `/usr/lib/softhsm/libsofthsm2.so` | SoftHSM library |
-| `HSM_TOKEN_LABEL` | `AuthToken` | HSM token label |
-| `HSM_USER_PIN` | `12345678` | HSM user PIN |
-| `DB_HOST` | `postgres` | Database host |
-| `DB_NAME` | `aadhaar_audit` | Database name |
-| `DB_USER` | `audit_user` | Database user |
-| `DB_PASSWORD` | `AuditPass2025!` | Database password |
-| `API_PORT` | `8000` | API port |
+| Variable          | Default                           | Description       |
+| ----------------- | --------------------------------- | ----------------- |
+| `HSM_LIBRARY`     | `/usr/lib/softhsm/libsofthsm2.so` | SoftHSM library   |
+| `HSM_TOKEN_LABEL` | `AuthToken`                       | HSM token label   |
+| `HSM_USER_PIN`    | `12345678`                        | HSM user PIN      |
+| `DB_HOST`         | `postgres`                        | Database host     |
+| `DB_NAME`         | `aadhaar_audit`                   | Database name     |
+| `DB_USER`         | `audit_user`                      | Database user     |
+| `DB_PASSWORD`     | `AuditPass2025!`                  | Database password |
+| `API_PORT`        | `8000`                            | API port          |
 
 ## Services
 
-| Service | Port | Credentials |
-|---------|-----|------------|
-| API | 8000 | - |
-| Prometheus | 9090 | - |
-| Grafana | 3000 | admin/admin123 |
+| Service    | Port | Credentials               |
+| ---------- | ---- | ------------------------- |
+| API        | 8000 | -                         |
+| Prometheus | 9090 | -                         |
+| Grafana    | 3000 | admin/admin123            |
 | PostgreSQL | 5432 | audit_user/AuditPass2025! |
 
 ## Prometheus Metrics
@@ -230,7 +217,8 @@ aadhaar-hsm-poc/
 ├── architecture.png
 └── test_vault.sh          # Test script for validation
 ```
-```
+
+````
 
 ## Testing
 
@@ -241,7 +229,7 @@ aadhaar-hsm-poc/
 ./test_vault.sh
 
 # Or run manually
-```
+````
 
 ### Manual Tests
 
@@ -309,7 +297,7 @@ See [SECURITY.md](SECURITY.md) for security policy and vulnerability disclosure.
 - [x] PostgreSQL-backed vault (production)
 - [x] HSM field encryption
 - [x] Correlation ID audit logging
-- [ ] Key rotation
+- [x] Key rotation (manual + auto-scheduler)
 - [ ] TLS/HTTPS
 - [ ] API authentication
 - [ ] Rate limiting
