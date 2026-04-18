@@ -67,13 +67,6 @@ class AadhaarData:
             biometric_data=data.get('biometric_data')
         )
 
-    def to_json(self) -> str:
-        return json.dumps(self.to_dict())
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "AadhaarData":
-        return cls(**{k: v for k, v in data.items() if v is not None})
-
 
 class TokenResponse:
     def __init__(self, token: str, masked_aadhaar: str, created_at: str):
@@ -153,18 +146,18 @@ class DatabaseVault:
         masked = self._mask_data(aadhaar_data.to_dict())
         created_at = datetime.now().isoformat()
 
-        # Encrypt data using HSM if available
+        # Encrypt data using HSM (fail-closed)
         data_bytes = aadhaar_data.to_json().encode('utf-8')
         if self.hsm_encryption:
             try:
                 encrypted_bytes = self.hsm_encryption.encrypt_data(data_bytes)
                 logger.info(f"HSM encrypted data for token: {token}")
-            except Exception as e:
-                logger.warning(f"HSM encryption failed, storing plain: {e}")
-                encrypted_bytes = data_bytes
+            except RuntimeError as e:
+                logger.error(f"HSM encryption failed (fail-closed): {e}")
+                raise
         else:
             encrypted_bytes = data_bytes
-            logger.info(f"Storing plain data for token: {token}")
+            logger.warning(f"No HSM encryption available - storing plaintext for token: {token}")
 
         try:
             with self.conn.cursor() as cur:
@@ -172,7 +165,7 @@ class DatabaseVault:
                     """INSERT INTO vault_records 
                        (token, encrypted_data, aadhaar_hash, masked_data, created_at, created_by)
                        VALUES (%s, %s, %s, %s, %s, %s)""",
-                    (token, data_bytes, aadhaar_hash, json.dumps(masked), created_at, user_id)
+                    (token, encrypted_bytes, aadhaar_hash, json.dumps(masked), created_at, user_id)
                 )
                 self.conn.commit()
 
@@ -219,23 +212,31 @@ class DatabaseVault:
             else:
                 data_bytes = encrypted_data
 
-            # Decrypt using HSM if available
+            # Decrypt using HSM (fail-closed)
             if self.hsm_encryption:
-                try:
-                    decrypted_bytes = self.hsm_encryption.decrypt_data(data_bytes)
-                    data_str = decrypted_bytes.decode('utf-8')
-                    logger.info(f"HSM decrypted data for token: {token}")
-                except Exception as e:
-                    logger.warning(f"HSM decryption failed, trying plain: {e}")
+                # Detect if data is encrypted (has IV prefix: 12 bytes + ciphertext)
+                if len(data_bytes) > 28:
+                    try:
+                        decrypted_bytes = self.hsm_encryption.decrypt_data(data_bytes)
+                        data_str = decrypted_bytes.decode('utf-8')
+                        logger.info(f"HSM decrypted data for token: {token}")
+                    except (RuntimeError, ValueError) as e:
+                        logger.error(f"HSM decryption failed (fail-closed): {e}")
+                        raise
+                else:
+                    # Legacy plaintext data
                     data_str = data_bytes.decode('utf-8')
+                    logger.info(f"Retrieved plaintext data for token: {token}")
             else:
                 data_str = data_bytes.decode('utf-8')
             data_dict = json.loads(data_str)
             return AadhaarData.from_dict(data_dict)
 
+        except (RuntimeError, ValueError):
+            raise
         except Exception as e:
             logger.error(f"Failed to retrieve data: {e}")
-            return None
+            raise
 
     def get_masked(self, token: str) -> Optional[dict]:
         """Get masked data only"""

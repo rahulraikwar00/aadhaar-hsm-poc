@@ -18,7 +18,7 @@ class HSMEncryption:
         self.session = session
         self._aes_key = None
 
-    def get_or_create_aes_key(self, label: str = "vault_key") -> Optional[object]:
+    def get_or_create_aes_key(self, label: str = "vault_key", extractable: bool = False) -> Optional[object]:
         """Get or create AES key for vault encryption"""
         if self._aes_key:
             return self._aes_key
@@ -31,35 +31,41 @@ class HSMEncryption:
                     logger.info(f"Found existing AES key: {label}")
                     return key
 
-            # Generate new AES key - use 'size' instead of 'length'
+            # Generate new AES key for SoftHSM compatibility
             key = self.session.generate_key(
-                key_type=KeyType.AES,
-                size=256,  # Use 'size' parameter
+                pkcs11.KeyType.AES,
+                length=256,
                 label=label,
-                store=True,
+                token=True,
                 private=True,
                 sensitive=True,
-                extractable=False
+                extractable=extractable,
+                encrypt=True,
+                decrypt=True,
+                wrap=False,
+                unwrap=False
             )
             self._aes_key = key
-            logger.info(f"Generated new AES key: {label}")
+            logger.info(f"Generated new AES key: {label} (extractable={extractable})")
             return key
 
         except Exception as e:
             logger.error(f"Failed to get/create AES key: {e}")
+            # Fallback: try with extractable=True for SoftHSM
+            if not extractable:
+                logger.info("Retrying with extractable=True...")
+                return self.get_or_create_aes_key(label, extractable=True)
             return None
 
     def encrypt_data(self, data: bytes) -> bytes:
-        """Encrypt data using AES key"""
+        """Encrypt data using AES key - fail-closed (raises on failure)"""
         if not self.session:
-            logger.warning("No HSM session, using plain storage")
-            return data
+            raise RuntimeError("HSM session not available - fail-closed: refusing to store plaintext")
 
         try:
             key = self.get_or_create_aes_key()
             if not key:
-                logger.warning("No AES key, using plain storage")
-                return data
+                raise RuntimeError("HSM AES key unavailable - fail-closed: refusing to store plaintext")
 
             iv = os.urandom(12)
             mechanism = Mechanism.AES_GCM(iv)
@@ -69,19 +75,24 @@ class HSMEncryption:
             logger.info(f"HSM encrypted {len(data)} bytes -> {len(result)} bytes")
             return result
 
+        except RuntimeError:
+            raise
         except Exception as e:
             logger.error(f"HSM encryption failed: {e}")
-            return data
+            raise RuntimeError(f"HSM encryption failed: {e}")
 
     def decrypt_data(self, encrypted_data: bytes) -> bytes:
-        """Decrypt data using AES key"""
-        if not self.session or len(encrypted_data) <= 16:
-            return encrypted_data
+        """Decrypt data using AES key - fail-closed (raises on failure)"""
+        if not self.session:
+            raise RuntimeError("HSM session not available - fail-closed: refusing to decrypt")
+
+        if len(encrypted_data) <= 16:
+            raise ValueError("Invalid encrypted data: too short for AES-GCM")
 
         try:
             key = self.get_or_create_aes_key()
             if not key:
-                return encrypted_data
+                raise RuntimeError("HSM AES key unavailable - fail-closed: refusing to decrypt")
 
             iv = encrypted_data[:12]
             ciphertext = encrypted_data[12:]
@@ -92,9 +103,11 @@ class HSMEncryption:
             logger.info(f"HSM decrypted {len(encrypted_data)} bytes")
             return decrypted
 
+        except (RuntimeError, ValueError):
+            raise
         except Exception as e:
             logger.error(f"HSM decryption failed: {e}")
-            return encrypted_data
+            raise RuntimeError(f"HSM decryption failed: {e}")
 
     def _mock_encrypt(self, data: bytes) -> bytes:
         """Mock encryption (for testing without HSM)"""
