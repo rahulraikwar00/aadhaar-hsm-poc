@@ -1,5 +1,10 @@
 # Aadhaar Secure Vault
 
+[![CI/CD](https://github.com/rahulraikwar/aadhaar-hsm-poc/actions/workflows/ci.yml/badge.svg)](https://github.com/rahulraikwar/aadhaar-hsm-poc/actions)
+[![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Code Coverage](https://codecov.io/gh/rahulraikwar/aadhaar-hsm-poc/branch/master/graph/badge.svg)](https://codecov.io/gh/rahulraikwar/aadhaar-hsm-poc)
+
 A self-installable, open-source proof-of-concept for secure on-premises Aadhaar storage using tokenization and HSM-backed encryption.
 
 ## Overview
@@ -24,6 +29,18 @@ This project implements a **Tokenization + Vault Architecture** for securely sto
 ## Architecture
 
 ![Architecture Diagram](architecture.png)
+
+## Quick Start
+
+```bash
+# Clone and run
+git clone https://github.com/rahulraikwar/aadhaar-hsm-poc.git
+cd aadhaar-hsm-poc
+docker compose up -d
+
+# Test the API
+curl http://localhost:8000/health
+```
 
 ## Quick Start
 

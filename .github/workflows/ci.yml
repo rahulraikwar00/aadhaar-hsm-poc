@@ -1,0 +1,105 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: aadhaar_audit
+          POSTGRES_USER: audit_user
+          POSTGRES_PASSWORD: AuditPass2025!
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+            
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+          
+      - name: Run tests with coverage
+        env:
+          DB_HOST: localhost
+          DB_NAME: aadhaar_audit
+          DB_USER: audit_user
+          DB_PASSWORD: AuditPass2025!
+        run: |
+          pytest --cov=app --cov-report=xml --cov-report=html -v
+          
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+          
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Install dependencies
+        run: |
+          pip install flake8 black
+          
+      - name: Check code style with Black
+        run: |
+          black --check app/ || true
+          
+      - name: Lint with flake8
+        run: |
+          flake8 app/ --max-line-length=100 --ignore=E501,W503 || true
+          
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        
+      - name: Build Docker image
+        run: |
+          docker build -t aadhaar-hsm-poc:test .
+          
+      - name: Test Docker image runs
+        run: |
+          docker run -d --name test-app aadhaar-hsm-poc:test
+          sleep 5
+          docker logs test-app
+          docker stop test-app || true

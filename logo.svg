@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="shield" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4477aa"/>
+      <stop offset="100%" style="stop-color:#225588"/>
+    </linearGradient>
+    <linearGradient id="lock" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#FFD700"/>
+      <stop offset="100%" style="stop-color:#FFA500"/>
+    </linearGradient>
+  </defs>
+  <!-- Shield background -->
+  <path d="M64 8 L112 24 L112 72 C112 104 88 120 64 128 C40 120 16 104 16 72 L16 24 Z" fill="url(#shield)"/>
+  <!-- Lock body -->
+  <rect x="44" y="56" width="40" height="32" rx="4" fill="#fff"/>
+  <!-- Lock shackle -->
+  <path d="M48 56 V40 A16 16 0 0 1 80 40 V56" stroke="url(#lock)" stroke-width="8" fill="none"/>
+  <!-- Key hole -->
+  <circle cx="64" cy="70" r="6" fill="#4477aa"/>
+  <rect x="60" y="70" width="8" height="12" fill="#4477aa"/>
+  <!-- A letter -->
+  <text x="64" y="95" font-family="Arial Black" font-size="16" font-weight="bold" fill="#4477aa" text-anchor="middle">A</text>
+</svg>
