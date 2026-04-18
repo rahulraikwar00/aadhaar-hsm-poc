@@ -7,6 +7,7 @@ import os
 import logging
 from prometheus_client import Counter, Gauge, generate_latest
 from starlette.responses import Response
+from typing import Optional
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -16,6 +17,11 @@ key_rotations_total = Counter('key_rotations_total', 'Total key rotations')
 hsm_signatures_total = Counter('hsm_signatures_total', 'Total HSM signatures')
 mock_signatures_total = Counter('mock_signatures_total', 'Total mock signatures')
 hsm_connected = Gauge('hsm_connected', 'HSM connection status (1=connected)')
+
+vault_store_total = Counter('vault_store_total', 'Total vault store operations')
+vault_retrieve_total = Counter('vault_retrieve_total', 'Total vault retrieve operations')
+vault_delete_total = Counter('vault_delete_total', 'Total vault delete operations')
+vault_duplicate_check_total = Counter('vault_duplicate_check_total', 'Total duplicate check operations')
 
 app = FastAPI(title="Aadhaar HSM Gateway", version="1.0.0")
 
@@ -42,6 +48,12 @@ try:
     logger.info("Audit logger imported")
 except ImportError as e:
     logger.warning(f"Audit logger not available: {e}")
+
+try:
+    from vault import vault, AadhaarData, TokenResponse
+    logger.info("Vault module imported")
+except ImportError as e:
+    logger.warning(f"Vault module not available: {e}")
 
 # Initialize components
 hsm = None
@@ -97,6 +109,45 @@ class AuthResponse(BaseModel):
     key_label: str
     timestamp: str
     mock_mode: bool
+
+
+class VaultStoreRequest(BaseModel):
+    aadhaar_number: str
+    name: Optional[str] = None
+    date_of_birth: Optional[str] = None
+    gender: Optional[str] = None
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    biometric_data: Optional[str] = None
+    user_id: str = "system"
+
+
+class VaultStoreResponse(BaseModel):
+    token: str
+    masked_aadhaar: str
+    created_at: str
+    message: str = "Data stored successfully"
+
+
+class VaultRetrieveResponse(BaseModel):
+    token: str
+    aadhaar_number: str
+    name: Optional[str] = None
+    date_of_birth: Optional[str] = None
+    gender: Optional[str] = None
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+
+
+class VaultCheckDuplicateRequest(BaseModel):
+    aadhaar_number: str
+
+
+class VaultCheckDuplicateResponse(BaseModel):
+    is_duplicate: bool
+    token: Optional[str] = None
 
 
 @app.get("/")
@@ -198,6 +249,111 @@ async def list_keys():
             return {"keys": [], "error": str(e), "hsm_available": False}
     else:
         return {"keys": [{"label": "mock_key", "type": "RSA-2048"}], "hsm_available": False}
+
+
+@app.post("/vault/store", response_model=VaultStoreResponse)
+async def vault_store(request: VaultStoreRequest):
+    """Store Aadhaar data in vault and generate token"""
+    vault_store_total.inc()
+
+    try:
+        from vault import AadhaarData
+
+        aadhaar_data = AadhaarData(
+            aadhaar_number=request.aadhaar_number,
+            name=request.name,
+            date_of_birth=request.date_of_birth,
+            gender=request.gender,
+            address=request.address,
+            phone=request.phone,
+            email=request.email,
+            biometric_data=request.biometric_data
+        )
+
+        response = vault.store_data(aadhaar_data, request.user_id)
+        logger.info(f"Vault store: token={response.token}")
+
+        return VaultStoreResponse(
+            token=response.token,
+            masked_aadhaar=response.masked_aadhaar,
+            created_at=response.created_at
+        )
+    except Exception as e:
+        logger.error(f"Vault store failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/vault/tokens")
+async def vault_list_tokens():
+    """List all valid tokens"""
+    tokens = vault.get_all_tokens()
+    return {"tokens": tokens, "count": len(tokens)}
+
+
+@app.post("/vault/check-duplicate", response_model=VaultCheckDuplicateResponse)
+async def vault_check_duplicate(request: VaultCheckDuplicateRequest):
+    """Check if Aadhaar number already exists"""
+    vault_duplicate_check_total.inc()
+
+    is_duplicate = vault.check_duplicate(request.aadhaar_number)
+    if is_duplicate:
+        for token in vault.get_all_tokens():
+            data = vault.retrieve_data(token)
+            if data and data.aadhaar_number == request.aadhaar_number:
+                return VaultCheckDuplicateResponse(
+                    is_duplicate=True,
+                    token=token
+                )
+
+    return VaultCheckDuplicateResponse(is_duplicate=False)
+
+
+@app.get("/vault/{token}", response_model=VaultRetrieveResponse)
+async def vault_retrieve(token: str):
+    """Retrieve Aadhaar data by token"""
+    vault_retrieve_total.inc()
+
+    try:
+        data = vault.retrieve_data(token)
+        if not data:
+            raise HTTPException(status_code=404, detail="Token not found or deleted")
+
+        return VaultRetrieveResponse(
+            token=token,
+            aadhaar_number=data.aadhaar_number,
+            name=data.name,
+            date_of_birth=data.date_of_birth,
+            gender=data.gender,
+            address=data.address,
+            phone=data.phone,
+            email=data.email
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Vault retrieve failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/vault/{token}/masked")
+async def vault_get_masked(token: str):
+    """Get masked Aadhaar data by token"""
+    masked = vault.get_masked(token)
+    if not masked:
+        raise HTTPException(status_code=404, detail="Token not found or deleted")
+    return masked
+
+
+@app.delete("/vault/{token}")
+async def vault_delete(token: str):
+    """Secure delete Aadhaar data by token"""
+    vault_delete_total.inc()
+
+    success = vault.delete_data(token)
+    if not success:
+        raise HTTPException(status_code=404, detail="Token not found")
+
+    return {"message": "Data deleted successfully", "token": token}
 
 
 @app.get("/metrics")
