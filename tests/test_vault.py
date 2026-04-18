@@ -2,7 +2,7 @@ import pytest
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
 
 from vault import Vault, AadhaarData
 from token_manager import mask_aadhaar, mask_email, mask_phone
@@ -50,7 +50,7 @@ class TestVault:
 
         masked = self.vault.get_masked(response.token)
         assert masked["aadhaar_number"] == "xxxxxxxx9012"
-        assert masked["email"] == "txxxxxt@example.com"
+        assert masked["email"] == "txxt@example.com"
         assert masked["phone"] == "xxxxxx3210"
 
     def test_delete_data(self):
@@ -101,9 +101,10 @@ class TestTokenManager:
 
     def test_mask_email(self):
         """Test email masking"""
-        assert mask_email("test@example.com") == "txxxxt@example.com"
+        assert mask_email("test@example.com") == "txxt@example.com"
         assert mask_email("ab@example.com") == "xx@example.com"
         assert mask_email("a@example.com") == "x@example.com"
+        assert mask_email("john.doe@example.com") == "jxxxxxxe@example.com"
 
     def test_mask_phone(self):
         """Test phone masking"""
