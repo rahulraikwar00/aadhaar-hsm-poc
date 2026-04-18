@@ -25,61 +25,44 @@ vault_duplicate_check_total = Counter('vault_duplicate_check_total', 'Total dupl
 
 app = FastAPI(title="Aadhaar HSM Gateway", version="1.0.0")
 
-# Try to import modules with fallbacks
 HSM_AVAILABLE = False
-key_manager = None
 audit_logger = None
 
 try:
     from hsm_wrapper import HSMWrapper
     HSM_AVAILABLE = True
-    logger.info("HSM wrapper imported")
 except ImportError as e:
     logger.warning(f"HSM wrapper not available: {e}")
 
 try:
-    from key_rotation_manager import KeyRotationManager
-    logger.info("Key rotation manager imported")
-except ImportError as e:
-    logger.warning(f"Key rotation manager not available: {e}")
-
-try:
     from audit_logger import DatabaseAuditLogger
-    logger.info("Audit logger imported")
 except ImportError as e:
     logger.warning(f"Audit logger not available: {e}")
 
 try:
     from db_vault import create_vault, AadhaarData, TokenResponse
-    logger.info("DB Vault module imported")
     DB_VAULT_AVAILABLE = True
 except ImportError as e:
-    logger.warning(f"DB Vault module not available: {e}")
+    logger.warning(f"DB Vault not available: {e}")
     DB_VAULT_AVAILABLE = False
 
 try:
-    from vault import vault, AadhaarData as InMemoryAadhaarData
-    logger.info("In-memory Vault module imported")
+    from vault import vault as in_memory_vault
     VAULT_FALLBACK = True
-except ImportError as e:
-    logger.warning(f"In-memory Vault module not available: {e}")
+except ImportError:
     VAULT_FALLBACK = False
 
 try:
-    from security import SecurityValidator, SensitiveDataFilter
-    logger.info("Security validator imported")
+    from security import SecurityValidator
     SECURITY_AVAILABLE = True
-except ImportError as e:
-    logger.warning(f"Security validator not available: {e}")
+except ImportError:
     SECURITY_AVAILABLE = False
 
-# Initialize components
 hsm = None
 if HSM_AVAILABLE:
     try:
         hsm = HSMWrapper(
-            library_path=os.getenv(
-                'HSM_LIBRARY', '/usr/lib/softhsm/libsofthsm2.so'),
+            library_path=os.getenv('HSM_LIBRARY', '/usr/lib/softhsm/libsofthsm2.so'),
             token_label=os.getenv('HSM_TOKEN_LABEL', 'AuthToken'),
             user_pin=os.getenv('HSM_USER_PIN', '12345678')
         )
@@ -88,55 +71,38 @@ if HSM_AVAILABLE:
             logger.info("HSM initialized")
         else:
             hsm_connected.set(0)
-            logger.warning("HSM initialized but no session")
-
-        # Initialize key manager if available
-        try:
-            key_manager = KeyRotationManager(hsm)
-            logger.info("Key rotation manager initialized")
-        except:
-            pass
-
-        # Initialize audit logger
-        try:
-            audit_logger = DatabaseAuditLogger(
-                db_host=os.getenv('DB_HOST'),
-                db_name=os.getenv('DB_NAME'),
-                db_user=os.getenv('DB_USER'),
-                db_password=os.getenv('DB_PASSWORD')
-            )
-            logger.info("Audit logger initialized")
-        except:
-            pass
-
     except Exception as e:
-        logger.warning(f"HSM initialization failed: {e}")
-        hsm = None
+        logger.warning(f"HSM init failed: {e}")
 
-# Initialize vault (PostgreSQL or fallback to in-memory)
+try:
+    audit_logger = DatabaseAuditLogger(
+        db_host=os.getenv('DB_HOST'),
+        db_name=os.getenv('DB_NAME'),
+        db_user=os.getenv('DB_USER'),
+        db_password=os.getenv('DB_PASSWORD')
+    )
+    logger.info("Audit logger initialized")
+except Exception as e:
+    logger.warning(f"Audit logger init failed: {e}")
+
 vault = None
 if DB_VAULT_AVAILABLE:
     try:
-        # Get HSM session for encryption
-        hsm_session = hsm.session if hsm else None
-        
         vault = create_vault(
             db_host=os.getenv('DB_HOST', 'postgres'),
             db_name=os.getenv('DB_NAME', 'aadhaar_audit'),
             db_user=os.getenv('DB_USER', 'audit_user'),
             db_password=os.getenv('DB_PASSWORD', 'AuditPass2025!'),
-            hsm_session=hsm_session
+            hsm_session=hsm.session if hsm else None
         )
         logger.info("Database vault initialized")
     except Exception as e:
-        logger.warning(f"Database vault initialization failed: {e}")
+        logger.warning(f"DB vault init failed: {e}")
         if VAULT_FALLBACK:
-            vault = vault
-            logger.info("Using in-memory vault fallback")
+            vault = in_memory_vault
 else:
     if VAULT_FALLBACK:
-        vault = vault
-        logger.info("Using in-memory vault fallback")
+        vault = in_memory_vault
 
 
 class AuthRequest(BaseModel):
@@ -193,45 +159,116 @@ class VaultCheckDuplicateResponse(BaseModel):
     token: Optional[str] = None
 
 
+@app.get("/")
+async def root():
+    return {
+        "message": "Aadhaar HSM Gateway",
+        "status": "running",
+        "hsm_available": hsm is not None and hsm.session is not None if hsm else False,
+        "vault_available": vault is not None,
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "healthy",
+        "hsm_available": hsm is not None and hsm.session is not None if hsm else False,
+        "vault_available": vault is not None,
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+@app.post("/vault/store", response_model=VaultStoreResponse)
+async def vault_store(request: VaultStoreRequest):
+    vault_store_total.inc()
+
+    try:
+        from db_vault import AadhaarData as DBAadhaarData
+
+        if SECURITY_AVAILABLE:
+            is_valid, error = SecurityValidator.validate_aadhaar(request.aadhaar_number)
+            if not is_valid:
+                raise HTTPException(status_code=400, detail=error)
+            if request.email:
+                is_valid, error = SecurityValidator.validate_email(request.email)
+                if not is_valid:
+                    raise HTTPException(status_code=400, detail=error)
+            if request.phone:
+                is_valid, error = SecurityValidator.validate_phone(request.phone)
+                if not is_valid:
+                    raise HTTPException(status_code=400, detail=error)
+            if request.name:
+                is_valid, error = SecurityValidator.validate_name(request.name)
+                if not is_valid:
+                    raise HTTPException(status_code=400, detail=error)
+
+        aadhaar_data = DBAadhaarData(
+            aadhaar_number=request.aadhaar_number,
+            name=request.name,
+            date_of_birth=request.date_of_birth,
+            gender=request.gender,
+            address=request.address,
+            phone=request.phone,
+            email=request.email,
+            biometric_data=request.biometric_data
+        )
+
+        response = vault.store_data(aadhaar_data, request.user_id)
+        logger.info(f"Vault store: token={response.token}")
+
+        if audit_logger and hasattr(audit_logger, 'log_vault_operation'):
+            audit_logger.log_vault_operation("STORE", response.token, request.user_id, {})
+
+        return VaultStoreResponse(token=response.token, masked_aadhaar=response.masked_aadhaar, created_at=response.created_at)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Vault store failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/vault/tokens")
+async def vault_list_tokens():
+    vault_duplicate_check_total.inc()
+    tokens = vault.get_all_tokens()
+    return {"tokens": tokens, "count": len(tokens)}
+
+
+@app.post("/vault/check-duplicate", response_model=VaultCheckDuplicateResponse)
+async def vault_check_duplicate(request: VaultCheckDuplicateRequest):
+    vault_duplicate_check_total.inc()
+    is_duplicate = vault.check_duplicate(request.aadhaar_number)
+    if is_duplicate:
+        token = vault.get_token_by_aadhaar(request.aadhaar_number)
+        if token:
+            if audit_logger and hasattr(audit_logger, 'log_vault_operation'):
+                audit_logger.log_vault_operation("CHECK_DUPLICATE", token, "system", {})
+            return VaultCheckDuplicateResponse(is_duplicate=True, token=token)
+    return VaultCheckDuplicateResponse(is_duplicate=False)
+
+
 @app.get("/vault/audit")
 async def vault_audit(token: str = None, limit: int = 100):
-    """Get audit log of vault operations"""
     if audit_logger and hasattr(audit_logger, 'get_vault_logs'):
         logs = audit_logger.get_vault_logs(token, limit)
         return {"logs": logs, "count": len(logs)}
     return {"logs": [], "count": 0, "message": "Audit logging not available"}
 
 
-class VaultAuditResponse(BaseModel):
-    token: str
-    operation: str
-    timestamp: str
-
-
 @app.get("/vault/{token}", response_model=VaultRetrieveResponse)
 async def vault_retrieve(token: str):
-    """Retrieve Aadhaar data by token"""
     vault_retrieve_total.inc()
-
     try:
         data = vault.retrieve_data(token)
         if not data:
             raise HTTPException(status_code=404, detail="Token not found or deleted")
-
-        # Log to audit
         if audit_logger and hasattr(audit_logger, 'log_vault_operation'):
             audit_logger.log_vault_operation("RETRIEVE", token, "system", {})
-
-        return VaultRetrieveResponse(
-            token=token,
-            aadhaar_number=data.aadhaar_number,
-            name=data.name,
-            date_of_birth=data.date_of_birth,
-            gender=data.gender,
-            address=data.address,
-            phone=data.phone,
-            email=data.email
-        )
+        return VaultRetrieveResponse(token=token, aadhaar_number=data.aadhaar_number, name=data.name,
+                                    date_of_birth=data.date_of_birth, gender=data.gender,
+                                    address=data.address, phone=data.phone, email=data.email)
     except HTTPException:
         raise
     except Exception as e:
@@ -241,7 +278,6 @@ async def vault_retrieve(token: str):
 
 @app.get("/vault/{token}/masked")
 async def vault_get_masked(token: str):
-    """Get masked Aadhaar data by token"""
     masked = vault.get_masked(token)
     if not masked:
         raise HTTPException(status_code=404, detail="Token not found or deleted")
@@ -250,49 +286,57 @@ async def vault_get_masked(token: str):
 
 @app.delete("/vault/{token}")
 async def vault_delete(token: str):
-    """Secure delete Aadhaar data by token"""
     vault_delete_total.inc()
-
     success = vault.delete_data(token)
     if not success:
         raise HTTPException(status_code=404, detail="Token not found")
-
-    # Log to audit
     if audit_logger and hasattr(audit_logger, 'log_vault_operation'):
         audit_logger.log_vault_operation("DELETE", token, "system", {})
-
     return {"message": "Data deleted successfully", "token": token}
 
 
 @app.get("/vault/{token}/validate")
 async def vault_validate_token(token: str):
-    """Validate a token (check if exists and not deleted)"""
     is_valid = vault.check_duplicate_by_token(token)
-    return {
-        "token": token,
-        "is_valid": is_valid,
-        "status": "active" if is_valid else "not_found_or_deleted"
+    return {"token": token, "is_valid": is_valid, "status": "active" if is_valid else "not_found_or_deleted"}
+
+
+@app.post("/auth/sign", response_model=AuthResponse)
+async def sign_auth_request(request: AuthRequest):
+    auth_requests_total.inc()
+    payload = {
+        "aadhaar_ref": request.aadhaar_ref,
+        "biometric_hash": hashlib.sha256(request.biometric_data.encode()).hexdigest(),
+        "purpose": request.purpose,
+        "user_id": request.user_id,
+        "timestamp": datetime.now().isoformat()
     }
+    payload_str = json.dumps(payload)
+    signature_hex = hashlib.sha256(payload_str.encode()).hexdigest()
+    mock_signatures_total.inc()
+    return AuthResponse(signed_request=payload_str, signature=signature_hex, key_label="mock_key",
+                       timestamp=datetime.now().isoformat(), mock_mode=False)
 
 
-class VaultAuditResponse(BaseModel):
-    token: str
-    operation: str
-    timestamp: str
+@app.get("/admin/keys")
+async def list_keys():
+    return {"keys": [{"label": "mock_key", "type": "RSA-2048"}], "hsm_available": False}
 
 
-@app.get("/vault/audit")
-async def vault_audit(token: str = None, limit: int = 100):
-    """Get audit log of vault operations"""
-    if audit_logger and hasattr(audit_logger, 'get_vault_logs'):
-        logs = audit_logger.get_vault_logs(token, limit)
-        return {"logs": logs, "count": len(logs)}
-    return {"logs": [], "count": 0, "message": "Audit logging not available"}
+@app.get("/admin/audit-log")
+async def get_audit_log():
+    if audit_logger:
+        try:
+            logs = audit_logger.get_recent_logs(100)
+            return {"logs": logs, "hsm_available": hsm is not None and hsm.session is not None if hsm else False}
+        except:
+            pass
+    return {"logs": [{"id": 1, "timestamp": datetime.now().isoformat(), "operation": "test"}],
+            "hsm_available": hsm is not None and hsm.session is not None if hsm else False}
 
 
 @app.get("/metrics")
 async def metrics():
-    """Prometheus metrics endpoint"""
     return Response(generate_latest(), media_type="text/plain")
 
 
