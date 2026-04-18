@@ -5,9 +5,17 @@ import json
 import hashlib
 import os
 import logging
+from prometheus_client import Counter, Gauge, generate_latest
+from starlette.responses import Response
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+auth_requests_total = Counter('auth_requests_total', 'Total auth requests')
+key_rotations_total = Counter('key_rotations_total', 'Total key rotations')
+hsm_signatures_total = Counter('hsm_signatures_total', 'Total HSM signatures')
+mock_signatures_total = Counter('mock_signatures_total', 'Total mock signatures')
+hsm_connected = Gauge('hsm_connected', 'HSM connection status (1=connected)')
 
 app = FastAPI(title="Aadhaar HSM Gateway", version="1.0.0")
 
@@ -45,7 +53,12 @@ if HSM_AVAILABLE:
             token_label=os.getenv('HSM_TOKEN_LABEL', 'AuthToken'),
             user_pin=os.getenv('HSM_USER_PIN', '12345678')
         )
-        logger.info("HSM initialized")
+        if hsm and hsm.session:
+            hsm_connected.set(1)
+            logger.info("HSM initialized")
+        else:
+            hsm_connected.set(0)
+            logger.warning("HSM initialized but no session")
 
         # Initialize key manager if available
         try:
@@ -108,6 +121,7 @@ async def health():
 @app.post("/auth/sign", response_model=AuthResponse)
 async def sign_auth_request(request: AuthRequest):
     """Sign authentication request"""
+    auth_requests_total.inc()
 
     # Create request payload
     payload = {
@@ -127,11 +141,13 @@ async def sign_auth_request(request: AuthRequest):
             signature = hsm.sign_data(None, payload_str.encode())
             signature_hex = signature.hex()
             key_label = "hsm_key"
+            hsm_signatures_total.inc()
         except Exception as e:
             logger.error(f"HSM signing failed: {e}")
             signature_hex = hashlib.sha256(payload_str.encode()).hexdigest()
             key_label = "fallback_key"
             mock_mode = True
+            mock_signatures_total.inc()
     else:
         # Mock signing
         signature_hex = hashlib.sha256(payload_str.encode()).hexdigest()
@@ -182,6 +198,12 @@ async def list_keys():
             return {"keys": [], "error": str(e), "hsm_available": False}
     else:
         return {"keys": [{"label": "mock_key", "type": "RSA-2048"}], "hsm_available": False}
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus metrics endpoint"""
+    return Response(generate_latest(), media_type="text/plain")
 
 
 if __name__ == "__main__":

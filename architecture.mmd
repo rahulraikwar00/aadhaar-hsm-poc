@@ -1,0 +1,42 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#4477aa'}}}%%
+graph TB
+    subgraph "Host Machine"
+        Client[Client]
+    end
+
+    subgraph "Docker Network: hsm-network"
+        subgraph "app-container"
+            API[app:8000<br/>FastAPI]
+        end
+
+        subgraph "metrics-stack"
+            Prometheus[prometheus:9090<br/>Prometheus]
+            Grafana[grafana:3000<br/>Grafana]
+        end
+
+        subgraph "infrastructure"
+            SoftHSM[softhsm<br/>SoftHSM]
+            Postgres[audit-db:5432<br/>PostgreSQL]
+        end
+    end
+
+    subgraph "Exposed Ports"
+        Port8000[":8000 API"]
+        Port9090[":9090 Prometheus"]
+        Port3000[":3000 Grafana"]
+    end
+
+    Client -->|http| Port8000
+    Port8000 -->|routes to| API
+    API -->|signing| SoftHSM
+    API -->|logging| Postgres
+    API -->|scrapes /metrics| Prometheus
+    Grafana -->|queries| Prometheus
+    Port9090 -->|for UI| Prometheus
+    Port3000 -->|for UI| Grafana
+
+    style API fill:#90EE90
+    style SoftHSM fill:#87CEEB
+    style Postgres fill:#DDA0DD
+    style Prometheus fill:#FFD700
+    style Grafana fill:#FFA500
