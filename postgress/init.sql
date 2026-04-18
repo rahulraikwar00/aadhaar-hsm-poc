@@ -16,6 +16,36 @@ CREATE INDEX idx_audit_timestamp ON audit_logs(timestamp);
 CREATE INDEX idx_audit_operation ON audit_logs(operation);
 CREATE INDEX idx_audit_user ON audit_logs(user_id);
 
+-- Vault records table for Aadhaar data
+CREATE TABLE IF NOT EXISTS vault_records (
+    id SERIAL PRIMARY KEY,
+    token VARCHAR(50) UNIQUE NOT NULL,
+    encrypted_data BYTEA NOT NULL,
+    aadhaar_hash VARCHAR(64) NOT NULL,
+    masked_data JSONB NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(255),
+    is_deleted BOOLEAN DEFAULT FALSE,
+    deleted_at TIMESTAMP WITH TIME ZONE
+);
+
+CREATE INDEX idx_vault_token ON vault_records(token);
+CREATE INDEX idx_vault_aadhaar_hash ON vault_records(aadhaar_hash);
+CREATE INDEX idx_vault_is_deleted ON vault_records(is_deleted);
+
+-- Vault audit table for tracking operations
+CREATE TABLE IF NOT EXISTS vault_audit (
+    id SERIAL PRIMARY KEY,
+    token VARCHAR(50),
+    operation VARCHAR(50) NOT NULL,
+    user_id VARCHAR(255),
+    timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    details JSONB
+);
+
+CREATE INDEX idx_vault_audit_token ON vault_audit(token);
+CREATE INDEX idx_vault_audit_timestamp ON vault_audit(timestamp);
+
 -- Create table for key metadata
 CREATE TABLE IF NOT EXISTS key_metadata (
     id SERIAL PRIMARY KEY,

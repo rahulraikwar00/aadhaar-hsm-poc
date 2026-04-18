@@ -50,10 +50,20 @@ except ImportError as e:
     logger.warning(f"Audit logger not available: {e}")
 
 try:
-    from vault import vault, AadhaarData, TokenResponse
-    logger.info("Vault module imported")
+    from db_vault import create_vault, AadhaarData, TokenResponse
+    logger.info("DB Vault module imported")
+    DB_VAULT_AVAILABLE = True
 except ImportError as e:
-    logger.warning(f"Vault module not available: {e}")
+    logger.warning(f"DB Vault module not available: {e}")
+    DB_VAULT_AVAILABLE = False
+
+try:
+    from vault import vault, AadhaarData as InMemoryAadhaarData
+    logger.info("In-memory Vault module imported")
+    VAULT_FALLBACK = True
+except ImportError as e:
+    logger.warning(f"In-memory Vault module not available: {e}")
+    VAULT_FALLBACK = False
 
 try:
     from security import SecurityValidator, SensitiveDataFilter
@@ -102,6 +112,27 @@ if HSM_AVAILABLE:
     except Exception as e:
         logger.warning(f"HSM initialization failed: {e}")
         hsm = None
+
+# Initialize vault (PostgreSQL or fallback to in-memory)
+vault = None
+if DB_VAULT_AVAILABLE:
+    try:
+        vault = create_vault(
+            db_host=os.getenv('DB_HOST', 'postgres'),
+            db_name=os.getenv('DB_NAME', 'aadhaar_audit'),
+            db_user=os.getenv('DB_USER', 'audit_user'),
+            db_password=os.getenv('DB_PASSWORD', 'AuditPass2025!')
+        )
+        logger.info("Database vault initialized")
+    except Exception as e:
+        logger.warning(f"Database vault initialization failed: {e}")
+        if VAULT_FALLBACK:
+            vault = vault
+            logger.info("Using in-memory vault fallback")
+else:
+    if VAULT_FALLBACK:
+        vault = vault
+        logger.info("Using in-memory vault fallback")
 
 
 class AuthRequest(BaseModel):
@@ -271,7 +302,7 @@ async def vault_store(request: VaultStoreRequest):
     vault_store_total.inc()
 
     try:
-        from vault import AadhaarData
+        from db_vault import AadhaarData as DBAadhaarData
 
         if SECURITY_AVAILABLE:
             is_valid, error = SecurityValidator.validate_aadhaar(request.aadhaar_number)
