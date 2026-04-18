@@ -23,6 +23,8 @@ This project implements a **Tokenization + Vault Architecture** for securely sto
 
 ## Architecture
 
+![Architecture Diagram](architecture.png)
+
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    hsm-network (bridge)                          │
