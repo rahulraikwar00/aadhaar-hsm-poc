@@ -193,6 +193,15 @@ hsm_signatures_total  # HSM signatures
    - `vault_retrieve_total`
    - `rate(vault_store_total[5m])`
 
+## Running Tests
+
+```bash
+# Run full test suite
+./test_vault.sh
+
+# Expected output: All 16 tests passed
+```
+
 ## Project Structure
 
 ```
@@ -216,12 +225,23 @@ aadhaar-hsm-poc/
 ├── config.yaml
 ├── README.md
 ├── architecture.mmd
-└── architecture.png
+├── architecture.png
+└── test_vault.sh          # Test script for validation
+```
 ```
 
-## Development
+## Testing
 
-### Run Tests
+### Using Test Script
+
+```bash
+# Run the test script
+./test_vault.sh
+
+# Or run manually
+```
+
+### Manual Tests
 
 ```bash
 # Test store
